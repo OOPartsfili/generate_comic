@@ -5,6 +5,8 @@ export const png = `data:image/png;base64,${(await readFile(new URL('../desktop/
 export function fakeAI(_settings, store, options = {}) {
   let calls = 0;
   return { client() { return {}; }, async models() { return ['gpt-5-mini', 'gpt-image-2']; },
+    async status() { return { connected: true, authType: 'chatgpt', plan: 'pro', models: [{ id: 'gpt-5.5', name: 'GPT-5.5', isDefault: true }], limits: [{ name: 'Codex', primary: { usedPercent: 20, windowDurationMins: 300, resetsAt: 1800000000 }, secondary: null }] }; },
+    async test() { return _settings.value.provider === 'codex' ? { ...await this.status(), ok: true, provider: 'codex' } : { ok: true, provider: 'api', models: await this.models(), textAvailable: true, imageAvailable: true }; },
     async structured(_schema, name, _instructions, ctx, signal) {
       await new Promise(resolve => setTimeout(resolve, options.delay || 70)); signal.throwIfAborted();
       if (name === 'short_story_outline') return { data: { outline: fixture.outline, characters: fixture.characters.map(({ reference: _r, referenceHistory: _h, ...c }) => c) }, model: 'test-text', usage: { input_tokens: 200, output_tokens: 300 } };

@@ -12,8 +12,14 @@ const assert = require('node:assert/strict');
     await page.getByRole('button', { name: '开始一个新故事' }).waitFor();
     assert.equal(await page.evaluate(() => typeof window.require), 'undefined');
     await page.screenshot({ path: path.resolve('tests/desktop-home.png') });
-    await page.getByRole('button', { name: /OpenAI 设置/ }).click();
-    await page.getByLabel('OpenAI API 密钥').fill('test-only-not-a-real-openai-key');
+    await page.getByRole('button', { name: /生成连接/ }).click();
+    if (process.env.MOGE_CHECK_CODEX === '1') {
+      await page.getByRole('button', { name: '保存并检测连接' }).click();
+      await page.getByText(/ChatGPT 已连接/).waitFor({ timeout: 60000 });
+      await page.screenshot({ path: path.resolve('tests/desktop-codex.png') });
+      console.log('PASS: native desktop resolves official Codex and system proxy; ChatGPT account connected.');
+    }
+    await page.getByLabel('生成方式').selectOption('api'); await page.getByLabel('OpenAI API 密钥').fill('test-only-not-a-real-openai-key');
     await page.getByRole('button', { name: '保存设置', exact: true }).click();
     await page.getByText('设置已保存，密钥使用 Windows 账户加密。').waitFor();
     const contents = await readFile(path.join(dir, 'workspace', 'settings.json'), 'utf8'); assert.ok(!contents.includes('test-only-not-a-real-openai-key')); assert.ok(JSON.parse(contents).encryptedKey);
@@ -25,5 +31,5 @@ const assert = require('node:assert/strict');
     console.log('PASS: native desktop window, sandbox, Windows encrypted key, sample project.');
   } finally { await app.close(); }
   const reopened = await electron.launch({ ...(executablePath ? { executablePath, args: [] } : { args: ['.'] }), env, timeout: 45000 });
-  try { const page = await reopened.firstWindow(); await page.getByRole('button', { name: /OpenAI 设置/ }).click(); await page.getByLabel('OpenAI API 密钥').waitFor(); assert.ok((await page.getByLabel('OpenAI API 密钥').getAttribute('placeholder')).includes('已保存')); console.log('PASS: encrypted key recovered after full restart.'); } finally { await reopened.close(); }
+  try { const page = await reopened.firstWindow(); await page.getByRole('button', { name: /生成连接/ }).click(); await page.getByLabel('OpenAI API 密钥').waitFor(); assert.ok((await page.getByLabel('OpenAI API 密钥').getAttribute('placeholder')).includes('已保存')); console.log('PASS: encrypted key recovered after full restart.'); } finally { await reopened.close(); }
 })().catch(e => { console.error(e); process.exitCode = 1; });

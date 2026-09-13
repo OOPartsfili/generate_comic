@@ -23,4 +23,4 @@ export const projectSchema = z.object({
   panels: z.array(panelSchema.extend({ id, image: asset, history: z.array(imageVersion).max(30), status: z.enum(['idle', 'generating', 'ready', 'error']), error: z.string().max(2000), bubbleX: z.number().min(0).max(80).default(8), bubbleY: z.number().min(0).max(80).default(8) })).max(12),
   createdAt: short, updatedAt: short,
 });
-export const settingsSchema = z.object({ textModel: z.string().regex(/^gpt-[a-zA-Z0-9._-]+$/).max(100), imageModel: z.string().regex(/^gpt-image-[a-zA-Z0-9._-]+$/).max(100), apiKey: z.string().max(500).optional(), clearKey: z.boolean().optional() });
+export const settingsSchema = z.object({ provider: z.enum(['codex', 'api']).default('codex'), codexModel: z.string().max(100).regex(/^(?:[a-zA-Z0-9][a-zA-Z0-9._-]*)?$/).default(''), codexPath: z.string().max(1000).default(''), textModel: z.string().regex(/^gpt-[a-zA-Z0-9._-]+$/).max(100), imageModel: z.string().regex(/^gpt-image-[a-zA-Z0-9._-]+$/).max(100), apiKey: z.string().max(500).optional(), clearKey: z.boolean().optional() });

@@ -13,10 +13,10 @@ import { projectSchema } from './schemas.js';
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 dotenv.config({ path: path.join(root, '.env'), quiet: true });
 
-export async function createApplication({ dataDir = process.env.MOGE_DATA_DIR || path.join(root, 'data'), vault, fetchImpl, aiFactory, token } = {}) {
+export async function createApplication({ dataDir = process.env.MOGE_DATA_DIR || path.join(root, 'data'), vault, fetchImpl, aiFactory, token, proxyProvider } = {}) {
   const store = new Store(dataDir); await store.init();
   const settings = new Settings(dataDir, vault); await settings.init();
-  const ai = aiFactory ? aiFactory(settings, store) : new AI(settings, store, fetchImpl);
+  const ai = aiFactory ? aiFactory(settings, store) : new AI(settings, store, fetchImpl, { proxyProvider });
   const jobs = new Jobs(store, ai); await jobs.init();
   const app = express();
   app.disable('x-powered-by');
@@ -33,10 +33,12 @@ export async function createApplication({ dataDir = process.env.MOGE_DATA_DIR ||
   });
   app.use(express.json({ limit: '180mb' }));
   const exclusive = async (id, fn) => { if (jobs.active.has(id)) throw Object.assign(new Error('作品正在生成，请等待完成或停止任务后再编辑'), { status: 409 }); jobs.active.set(id, 'editing'); try { return await fn(); } finally { jobs.active.delete(id); } };
-  app.get('/api/health', (_req, res) => res.json({ ok: true, app: 'moge-studio', version: '2.0.0' }));
+  app.get('/api/health', (_req, res) => res.json({ ok: true, app: 'moge-studio', version: '2.1.0' }));
   app.get('/api/settings', (_req, res) => res.json(settings.public()));
-  app.put('/api/settings', async (req, res) => { if (jobs.controllers.size) return res.status(409).json({ error: '请先等待当前生成结束再修改模型或密钥' }); res.json(await settings.save(req.body)); });
-  app.post('/api/settings/test', async (_req, res) => { const models = await ai.models(); res.json({ ok: true, models, textAvailable: models.includes(settings.value.textModel), imageAvailable: models.includes(settings.value.imageModel) }); });
+  app.put('/api/settings', async (req, res) => { if (jobs.controllers.size) return res.status(409).json({ error: '请先等待当前生成结束再修改连接或模型' }); const oldPath = settings.value.codexPath; const saved = await settings.save(req.body); if (oldPath !== settings.value.codexPath) await ai.codex?.reset(); res.json(saved); });
+  app.get('/api/connection', async (_req, res) => res.json(await ai.status()));
+  app.post('/api/settings/test', async (_req, res) => res.json(await ai.test()));
+  app.post('/api/codex/login', async (_req, res) => { if (jobs.controllers.size) return res.status(409).json({ error: '请先停止当前生成再登录。' }); if (!ai.codex) return res.status(400).json({ error: '当前服务不提供登录。' }); res.json(await ai.codex.login()); });
   app.get('/api/projects', async (_req, res) => res.json(await store.list()));
   app.post('/api/projects', async (req, res) => {
     const p = projectSchema.parse({ ...req.body, id: randomUUID(), version: 2, revision: 0, createdAt: new Date().toISOString(), updatedAt: new Date().toISOString() });
@@ -86,12 +88,13 @@ export async function createApplication({ dataDir = process.env.MOGE_DATA_DIR ||
     const status = error.type === 'entity.too.large' ? 413 : error.type === 'entity.parse.failed' ? 400 : error.status >= 400 && error.status <= 599 ? error.status : 500;
     res.status(status).json({ error: error.type === 'entity.too.large' ? '工程文件太大，请减少图片数量后再导入。' : error.type === 'entity.parse.failed' ? '文件不是有效的 JSON 工程。' : friendlyError(error) });
   });
-  return { app, store, settings, jobs };
+  return { app, store, settings, jobs, ai };
 }
 
 export async function startServer(options = {}) {
   const application = await createApplication(options);
   const server = await new Promise((resolve, reject) => { const s = application.app.listen(options.port ?? Number(process.env.PORT || 8787), '127.0.0.1', () => resolve(s)); s.once('error', reject); });
+  server.once('close', () => application.ai.close?.());
   return { ...application, server, url: `http://127.0.0.1:${server.address().port}` };
 }
 if (process.argv[1] && import.meta.url === pathToFileURL(path.resolve(process.argv[1])).href) {

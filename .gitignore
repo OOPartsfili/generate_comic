@@ -16,3 +16,7 @@ tests/desktop-*.png
 *.exe
 *.lnk
 *.log
+.codex/
+auth.json
+*.pem
+*.key

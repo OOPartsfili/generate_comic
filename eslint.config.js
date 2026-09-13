@@ -7,7 +7,7 @@ export default [
   { ignores: ['dist', 'release', 'data', 'test-results', 'playwright-report', 'node_modules', '.npm-cache', '.electron-cache', 'tests/.tmp'] },
   js.configs.recommended,
   {
-    files: ['**/*.{js,jsx,cjs}'],
+    files: ['**/*.{js,jsx,cjs,mjs}'],
     languageOptions: {
       ecmaVersion: 2024,
       globals: {

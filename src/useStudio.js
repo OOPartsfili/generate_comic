@@ -14,6 +14,7 @@ export function useStudio() {
   const [project, setProject] = useState(null);
   const [projects, setProjects] = useState([]);
   const [settings, setSettings] = useState(null);
+  const [connection, setConnection] = useState(null);
   const [job, setJob] = useState(null);
   const [jobs, setJobs] = useState([]);
   const [error, setError] = useState('');
@@ -57,6 +58,12 @@ export function useStudio() {
     accept(p); setJobs(js); setJob(js.find(ongoing) || null); setError('');
     if (js[0]?.status === 'interrupted') setNotice(js[0].message);
   }, [accept, flush]);
+  useEffect(() => {
+    if (!settings) return;
+    let stopped = false;
+    api('/connection').then(value => { if (!stopped) setConnection(value); }).catch(() => { if (!stopped) setConnection(null); });
+    return () => { stopped = true; };
+  }, [settings]);
   useEffect(() => {
     let stopped = false;
     Promise.all([api('/settings'), api('/projects')]).then(async ([s, ps]) => {
@@ -105,5 +112,5 @@ export function useStudio() {
     finally { setPending(false); }
   }
   async function importProject(data) { await flush(); const p = await api('/import', { method: 'POST', body: data }); accept(p); setJob(null); setJobs([]); await refresh(); }
-  return { project, projects, settings, setSettings, job, jobs, error, setError, notice, setNotice, saving, loading, pending, busy: pending || !!ongoing(job), accept, refresh, flush, update, open, create, run, importProject, cancel: () => api(`/jobs/${job.id}/cancel`, { method: 'POST' }).then(setJob) };
+  return { project, projects, settings, setSettings, connection, setConnection, job, jobs, error, setError, notice, setNotice, saving, loading, pending, busy: pending || !!ongoing(job), accept, refresh, flush, update, open, create, run, importProject, cancel: () => api(`/jobs/${job.id}/cancel`, { method: 'POST' }).then(setJob) };
 }

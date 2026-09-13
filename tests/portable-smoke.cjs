@@ -15,10 +15,15 @@ const assert = require('node:assert/strict');
       let ready = false;
       for (let i = 0; i < 180; i++) { try { const r = await fetch(`http://127.0.0.1:${port}/json/version`, { signal: AbortSignal.timeout(1000) }); if (r.ok) { ready = true; break; } } catch { /* Wait for portable extraction and desktop startup. */ } await new Promise(resolve => setTimeout(resolve, 500)); }
       assert.ok(ready, 'Portable did not start its desktop window in time.');
-      browser = await chromium.connectOverCDP(`http://127.0.0.1:${port}`); const page = browser.contexts()[0].pages()[0]; await page.getByRole('button', { name: /OpenAI 设置/ }).waitFor();
+      browser = await chromium.connectOverCDP(`http://127.0.0.1:${port}`); const page = browser.contexts()[0].pages()[0]; await page.getByRole('button', { name: /生成连接/ }).waitFor();
       assert.equal(await page.evaluate(() => typeof window.require), 'undefined');
-      await page.getByRole('button', { name: /OpenAI 设置/ }).click();
-      if (!turn) { await page.getByLabel('OpenAI API 密钥').fill('portable-test-only-not-a-real-key'); await page.getByRole('button', { name: '保存设置', exact: true }).click(); await page.getByText('设置已保存，密钥使用 Windows 账户加密。').waitFor(); }
+      await page.getByRole('button', { name: /生成连接/ }).click();
+      if (!turn && process.env.MOGE_CHECK_CODEX === '1') {
+        await page.getByRole('button', { name: '保存并检测连接' }).click();
+        await page.getByText(/ChatGPT 已连接/).waitFor({ timeout: 60000 });
+        console.log('PASS: portable EXE uses official Codex with ChatGPT sign-in.');
+      }
+      if (!turn) { await page.getByLabel('生成方式').selectOption('api'); await page.getByLabel('OpenAI API 密钥').fill('portable-test-only-not-a-real-key'); await page.getByRole('button', { name: '保存设置', exact: true }).click(); await page.getByText('设置已保存，密钥使用 Windows 账户加密。').waitFor(); }
       else assert.ok((await page.getByLabel('OpenAI API 密钥').getAttribute('placeholder')).includes('已保存'));
       await page.getByRole('button', { name: '关闭弹窗' }).click();
       await page.screenshot({ path: path.resolve('docs/screenshots/单文件程序主页.png') });

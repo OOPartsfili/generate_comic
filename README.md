@@ -1,14 +1,18 @@
-# 墨格创作室 2.0
+# 墨格创作室 2.1
 
-把一个想法，制作成完整的短篇小说与漫画。面向 4–12 格短篇片段，文字与插画全部使用 OpenAI 官方 API。
+把一个想法，制作成完整的短篇小说与漫画。面向 4–12 格短篇片段，默认流程为 **墨格创作室 → 官方 Codex → 你的 ChatGPT 账号**。文字与插画使用 ChatGPT 订阅中的 Codex 额度，不需要 API Key。
 
 ## 打开程序
 
-本地已打包的版本可双击项目目录里的「墨格创作室.exe」。无需安装 Node.js，无需命令行。首次使用点击左下角「OpenAI 设置」，填写自己的 API 密钥，保存并检测连接。
+本地已打包的版本可双击项目目录里的「墨格创作室.exe」。这台电脑已安装官方 Codex，可直接点击左下角「生成连接」→「保存并检测连接」。尚未登录时点击「使用 ChatGPT 登录」，在官方浏览器页面完成登录后回到程序。
 
 Git 仓库保存源码，不包含 EXE、依赖目录、API 密钥和个人作品。从 GitHub 克隆后，请按下方「开发与复现」运行，或参考[打包说明](docs/打包说明.md)制作 Windows 程序。
 
-默认文字模型为 `gpt-5-mini`，图像模型为 `gpt-image-2`。可以在设置中改用账户支持的 GPT / GPT Image 模型。检测连接读取模型列表，不进行付费绘图；模型可见不保证额度、组织验证或调用权限。
+换一台电脑使用时，需要安装官方 Codex CLI，并用自己的 ChatGPT 账号登录。程序自动查找 PATH 中的 Codex；也可在连接设置中指定官方 `codex.exe` 的绝对路径。首次安装可使用 `npm install -g @openai/codex`，随后运行 `codex login` 或使用程序内的登录按钮。已打包的墨格本身不需要 Node.js；通过 npm 安装 Codex 时需要 Node.js。
+
+文字模型自动采用当前 Codex 可用列表中的默认模型，也可检测后选择。插画使用 Codex 内置图片生成，传入角色参考图与前一格画面以帮助保持连续。画幅与质量以工具实际支持为准。检测连接只检查登录、模型与可用额度，不生成内容。
+
+连接设置保留可选的 **OpenAI API 模式**，仅在手动选择时使用。它与 ChatGPT 订阅独立计费；Codex 额度不足、登录失效或生成失败时，不会自动降级到 API。
 
 ## 创作流程
 
@@ -30,7 +34,9 @@ Git 仓库保存源码，不包含 EXE、依赖目录、API 密钥和个人作�
 
 桌面数据目录：`%APPDATA%\MogeStudio\workspace`。
 
-其中 `projects` 保存作品，`assets` 保存图片，`history` 保存恢复版本，`jobs` 保存任务与用量记录。`settings.json` 仅保存模型名与系统加密后的密钥。密钥由 Windows 当前账户保护，不能直接拿到另一账户解密。
+其中 `projects` 保存作品，`assets` 保存图片，`history` 保存恢复版本，`jobs` 保存任务与用量记录，`codex-work` 是任务临时目录。`settings.json` 保存连接方式、模型与可选的 Codex 路径。若主动使用 API 模式，密钥由 Windows 当前账户加密保存，不能直接拿到另一账户解密。
+
+ChatGPT 登录凭据由官方 Codex 自行保存和刷新，墨格不读取 `auth.json`，不复制登录 token，也不将账号邮箱或凭据写入作品。Codex 任务采用临时会话；官方客户端仍可能按自身设置保留运行诊断信息。
 
 导出工程包含**当前**角色参考图和漫画图片，不含 API 密钥与全部历史版本。备份全部历史时，可在退出程序后复制整个 workspace 文件夹。
 
@@ -40,7 +46,8 @@ Git 仓库保存源码，不包含 EXE、依赖目录、API 密钥和个人作�
 - 参考图与固定角色描述有助于一致性，但不能保证每格完全一致，需要人工审阅与重绘。
 - 文字返回使用结构化校验；镜头数量不符、模型拒绝或输出不完整会明确报错并保留旧稿。
 - 发送到 OpenAI 的内容包括本次需要的故事、角色和参考图；其他作品不会被发送。
-- 每次生成实际使用 API 额度。程序不硬编码美元费用，不会自动重试付费请求。停止等待不保证取消 OpenAI 服务端已接收的计费请求。
+- 默认每次生成消耗 Codex 套餐额度，图片通常比纯文字消耗更多；额度并非无限。程序不自动重新发起失败的生成任务，Codex 自身可能重连传输。停止会向官方发送中断请求，不能保证撤回服务端已发生的额度消耗。手动选择 API 模式时使用独立 API 账单。
+- 本地接入使用官方 App Server 的 stdio 协议，不抓取 ChatGPT 网页或浏览器 Cookie。关闭命令执行、浏览器、插件和子代理工具，只处理本次创作内容。App Server 属于持续演进的接口，升级 Codex 后建议重新检测连接。
 - PDF 以高清页面图像保留中文排版，文字不是可选择的文字层。
 - 页面与工程导出支持全部画格。未完成绘图时仍可导出文稿和工程，漫画成品导出会等所有画格完成。
 
@@ -52,6 +59,8 @@ Git 仓库保存源码，不包含 EXE、依赖目录、API 密钥和个人作�
 git clone https://github.com/OOPartsfili/generate_comic.git
 cd generate_comic
 npm install
+npm install -g @openai/codex
+codex login
 npm run dev
 ```
 
@@ -66,15 +75,20 @@ npm run lint
 npm run package
 ```
 
-浏览器开发模式的 API 密钥只保留在进程内；桌面模式提供系统加密持久化。可选 `.env` 配置见 `.env.example`，不要把密钥提交进代码库。
+可选 `.env` 配置见 `.env.example`：`MOGE_CODEX_PATH`、`MOGE_CODEX_MODEL` 和 `MOGE_PROXY_URL` 用于本机覆盖设置。桌面版自动采用系统 HTTP 代理；浏览器开发模式可通过环境变量设置代理。API 模式可从 `OPENAI_API_KEY` 读取密钥，或在界面填写；浏览器开发模式仅在进程内保存，桌面模式提供系统加密持久化。
+
+真实值放在环境变量或已被 Git 忽略的 `.env`，不要写进源码。仓库不包含 `.env`、登录凭据、个人作品、测试运行数据或 EXE。
 
 `npm run test:ui` 使用本机 Microsoft Edge 与隔离测试服务，不调用 OpenAI；`node tests/desktop-smoke.cjs` 验证真正的 Electron 桌面窗口与系统加密。测试数据位于 `tests/.tmp`，不会混入正式作品库。
+
+需要真实验证时，设置 `MOGE_RUN_LIVE_CODEX=1` 并运行 `node tests/live-codex.mjs`。此项明确使用当前 ChatGPT 账号额度，验证纲要、正文、四格脚本、两格连续插画与携图导出；常规测试不会触发它。
 
 ## 项目结构
 
 - `desktop/main.cjs`：Windows 桌面窗口、单实例、系统密钥加密、下载与退出处理。
 - `server/index.js`：仅本机的 API 与生产静态资源服务。
-- `server/openai.js`：OpenAI SDK、Responses 结构化生成、GPT Image 生成/多参考图编辑。
+- `server/codex.js`：官方 Codex 发现、ChatGPT 登录、stdio 协议、结构化生成、内置出图、取消与凭据过滤。
+- `server/openai.js`：默认 Codex 路由、连接配置，以及手动选择的 OpenAI API 适配。
 - `server/jobs.js`：任务锁、进度、取消、按格保存、错误恢复。
 - `server/storage.js`：原子写入、修订号校验、版本与图片存储。
 - `src/`：React 创作界面及 Canvas 中文排版与导出。
@@ -82,3 +96,5 @@ npm run package
 旧版源码已完整备份至 `E:\ITEM\comic-generator-backup-20260913-164014`，未复制 node_modules 和构建缓存。旧版 JSON 工程可在「导入作品工程」中导入；旧版 SVG 占位图会被清空，需重新绘制。旧版若仅保存在浏览器 localStorage，需要先在旧版浏览器页面导出数据，再导入新版。
 
 调研依据与产品取舍见 [AI漫画工具调研与重构说明](docs/AI漫画工具调研与重构说明.md)。
+
+Codex 接入依据：[官方认证](https://learn.chatgpt.com/docs/auth)、[App Server 协议](https://learn.chatgpt.com/docs/app-server)、[内置图片生成与额度](https://learn.chatgpt.com/docs/image-generation)。

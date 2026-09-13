@@ -8,7 +8,7 @@ import { styleText } from '../shared/story.js';
 
 const labels = { outline: '生成故事纲要', prose: '生成小说文段', storyboard: '生成分镜脚本', character: '生成角色参考图', panel: '绘制单格', panels: '绘制缺失画格' };
 export class Jobs {
-  constructor(store, ai) { this.store = store; this.ai = ai; this.active = new Map(); this.jobs = new Map(); this.controllers = new Map(); }
+  constructor(store, ai) { this.store = store; this.ai = ai; this.active = new Map(); this.jobs = new Map(); this.controllers = new Map(); this.writes = new Map(); }
   file(id) { return path.join(this.store.root, 'jobs', `${id}.json`); }
   async init() {
     const files = (await readdir(path.join(this.store.root, 'jobs'))).filter(f => f.endsWith('.json'));
@@ -18,7 +18,17 @@ export class Jobs {
       this.jobs.set(job.id, job);
     }
   }
-  async update(job, patch) { Object.assign(job, patch, { updatedAt: new Date().toISOString() }); await atomicJson(this.file(job.id), job); }
+  async update(job, patch) {
+    const previous = this.writes.get(job.id) || Promise.resolve();
+    const writing = previous.catch(() => {}).then(async () => {
+      if (['completed', 'partial', 'failed', 'cancelled', 'interrupted'].includes(job.status) && ['queued', 'running', 'cancelling'].includes(patch.status)) return;
+      const next = { ...job, ...patch, updatedAt: new Date().toISOString() };
+      await atomicJson(this.file(job.id), next);
+      Object.assign(job, next);
+    });
+    this.writes.set(job.id, writing);
+    try { await writing; } finally { if (this.writes.get(job.id) === writing) this.writes.delete(job.id); }
+  }
   async start(projectId, type, targetId, note = '', revision) {
     if (!labels[type]) throw Object.assign(new Error('未知的生成任务'), { status: 400 });
     if (this.active.has(projectId)) throw Object.assign(new Error('这份作品仍有任务进行中'), { status: 409 });
@@ -40,7 +50,15 @@ export class Jobs {
       return job;
     } catch (e) { this.active.delete(projectId); throw e; }
   }
-  async cancel(id) { const job = this.jobs.get(id); if (!job) throw new Error('任务不存在'); if (this.controllers.has(id)) { await this.update(job, { status: 'cancelling', message: '正在停止请求；已完成结果会保留。已提交的请求仍可能计费。' }); this.controllers.get(id).abort(); } return job; }
+  async cancel(id) {
+    const job = this.jobs.get(id); if (!job) throw new Error('任务不存在');
+    const controller = this.controllers.get(id);
+    if (controller) {
+      const saving = this.update(job, { status: 'cancelling', message: '正在停止请求；已完成结果会保留。已提交的请求仍可能消耗额度或产生 API 费用。' });
+      controller.abort(); await saving;
+    }
+    return job;
+  }
   async run(job, p, note, signal) {
     try {
       await this.update(job, { status: 'running', message: labels[job.type] });

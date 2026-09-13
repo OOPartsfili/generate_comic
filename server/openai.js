@@ -4,21 +4,22 @@ import { readFile } from 'node:fs/promises';
 import path from 'node:path';
 import { atomicJson, readJson } from './storage.js';
 import { settingsSchema } from './schemas.js';
+import { CodexAI, redact } from './codex.js';
 
 export class Settings {
   constructor(root, vault) { this.file = path.join(root, 'settings.json'); this.vault = vault; this.sessionKey = ''; }
   async init() {
-    this.value = await readJson(this.file, { textModel: process.env.OPENAI_TEXT_MODEL || 'gpt-5-mini', imageModel: process.env.OPENAI_IMAGE_MODEL || 'gpt-image-2' });
+    this.value = { provider: 'codex', codexModel: process.env.MOGE_CODEX_MODEL || '', codexPath: process.env.MOGE_CODEX_PATH || '', textModel: process.env.OPENAI_TEXT_MODEL || 'gpt-5-mini', imageModel: process.env.OPENAI_IMAGE_MODEL || 'gpt-image-2', ...await readJson(this.file, {}) };
     if (this.value.encryptedKey && this.vault) {
       try { this.sessionKey = this.vault.decrypt(this.value.encryptedKey); }
       catch { this.keyError = '保存的密钥无法在当前 Windows 账户解密，请重新填写。'; }
     }
   }
   key() { return this.sessionKey || process.env.OPENAI_API_KEY || ''; }
-  public() { return { textModel: this.value.textModel, imageModel: this.value.imageModel, hasKey: !!this.key(), canPersistKey: !!this.vault, keySource: this.sessionKey ? (this.value.encryptedKey ? 'encrypted' : 'session') : process.env.OPENAI_API_KEY ? 'environment' : 'none', keyError: this.keyError || '' }; }
+  public() { return { provider: this.value.provider, codexModel: this.value.codexModel, codexPath: this.value.codexPath, textModel: this.value.textModel, imageModel: this.value.imageModel, hasKey: !!this.key(), canPersistKey: !!this.vault, keySource: this.sessionKey ? (this.value.encryptedKey ? 'encrypted' : 'session') : process.env.OPENAI_API_KEY ? 'environment' : 'none', keyError: this.keyError || '' }; }
   async save(raw) {
     const next = settingsSchema.parse(raw);
-    const value = { ...this.value, textModel: next.textModel, imageModel: next.imageModel };
+    const value = { ...this.value, provider: next.provider, codexModel: next.codexModel, codexPath: next.codexPath, textModel: next.textModel, imageModel: next.imageModel };
     let key = this.sessionKey;
     if (next.clearKey) { key = ''; delete value.encryptedKey; }
     if (next.apiKey?.trim()) { key = next.apiKey.trim(); if (this.vault) value.encryptedKey = this.vault.encrypt(key); else delete value.encryptedKey; }
@@ -37,20 +38,30 @@ export function friendlyError(error) {
   if (fromAPI && error.status === 404) return '所选 OpenAI 模型不可用，请在设置中选择账户可用的模型。';
   if (/timeout/i.test(error.name + error.message)) return '请求超时。服务端可能已处理此请求，请检查用量后再重试。';
   if (error.name === 'APIConnectionError') return '无法连接 OpenAI，请检查网络或系统代理后重试。';
-  return String(error.message || '生成失败，请重试。').replace(/sk-[A-Za-z0-9_-]+/g, '[密钥已隐藏]').slice(0, 1500);
+  return redact(error.message || '生成失败，请重试。').slice(0, 1500);
 }
 
 export class AI {
-  constructor(settings, store, fetchImpl) { this.settings = settings; this.store = store; this.fetchImpl = fetchImpl; }
+  constructor(settings, store, fetchImpl, codexOptions) { this.settings = settings; this.store = store; this.fetchImpl = fetchImpl; this.codex = new CodexAI(settings, store, codexOptions); }
+  get usesCodex() { return this.settings.value.provider === 'codex'; }
+  async status() { return this.usesCodex ? this.codex.status() : { connected: !!this.settings.key(), authType: 'apiKey', plan: null, models: [], limits: [] }; }
+  async test() {
+    if (this.usesCodex) { const status = await this.codex.status(); return { ...status, ok: status.connected, provider: 'codex' }; }
+    const models = await this.models(); return { ok: true, provider: 'api', models, textAvailable: models.includes(this.settings.value.textModel), imageAvailable: models.includes(this.settings.value.imageModel) };
+  }
+  close() { this.codex.close(); }
   client() {
+    if (this.usesCodex) return this.codex;
     if (!this.settings.key()) throw Object.assign(new Error('请先在「OpenAI 设置」中填写 API 密钥。'), { status: 400 });
     return new OpenAI({ apiKey: this.settings.key(), baseURL: 'https://api.openai.com/v1', maxRetries: 0, timeout: 300000, ...(this.fetchImpl ? { fetch: this.fetchImpl } : {}) });
   }
   async models() {
+    if (this.usesCodex) { await this.codex.requireAccount(); return (await this.codex.modelCatalog()).map(m => m.model); }
     const models = await this.client().models.list({ timeout: 30000 });
     return models.data.map(m => m.id).filter(id => id.startsWith('gpt-')).sort();
   }
   async structured(schema, name, instructions, context, signal) {
+    if (this.usesCodex) return this.codex.structured(schema, name, instructions, context, signal);
     const model = this.settings.value.textModel;
     const result = await this.client().responses.parse({
       model, store: false,
@@ -67,6 +78,7 @@ export class AI {
     return { data: schema.parse(result.output_parsed), usage: result.usage, model };
   }
   async image(prompt, project, references, signal) {
+    if (this.usesCodex) return this.codex.image(prompt, project, references, signal);
     const model = this.settings.value.imageModel;
     const params = { model, prompt, n: 1, size: project.size, quality: project.quality, output_format: 'png' };
     let result;

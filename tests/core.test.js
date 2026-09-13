@@ -66,7 +66,7 @@ test('错误分镜数量拒绝落盘；跨站、路径与无效图片拒绝', as
 
 test('OpenAI 官方传输参数：结构化输出、PNG 生成与多参考图编辑、429 不自动重试', async t => {
   const dir = await temp(t); const store = new Store(dir); await store.init(); const settings = new Settings(dir); await settings.init();
-  await settings.save({ textModel: 'gpt-5-mini', imageModel: 'gpt-image-2', apiKey: 'test-key-not-a-real-secret' });
+  await settings.save({ provider: 'api', textModel: 'gpt-5-mini', imageModel: 'gpt-image-2', apiKey: 'test-key-not-a-real-secret' });
   const captured = []; let fail = false;
   const transport = async (url, init) => {
     if (url === 'data:,') return new Response('');
