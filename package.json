@@ -1,6 +1,6 @@
 {
   "name": "comic-generator",
-  "version": "2.1.0",
+  "version": "2.1.1",
   "private": true,
   "type": "module",
   "scripts": {
@@ -15,7 +15,7 @@
     "pack": "npm run build && electron-builder --win --dir",
     "package": "npm run build && electron-builder --win portable",
     "test": "node --test tests/*.test.js",
-    "test:ui": "playwright test"
+    "test:ui": "npm run build && playwright test"
   },
   "dependencies": {
     "dotenv": "^17.2.2",

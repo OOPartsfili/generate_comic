@@ -4,7 +4,9 @@ import { EventEmitter } from 'node:events';
 import { access, mkdir, mkdtemp, readFile, realpath, rm } from 'node:fs/promises';
 import path from 'node:path';
 import os from 'node:os';
+import { randomUUID } from 'node:crypto';
 import { zodTextFormat } from 'openai/helpers/zod';
+import { Diagnostics, errorCode } from './diagnostics.js';
 
 export function redact(value) {
   return String(value || '').replace(/(?:sk-[\w-]+|(?:access_token|refresh_token|id_token|apiKey|Authorization)["'\s:=]+[^\s,"'}]+)/gi, '[凭据已隐藏]')
@@ -12,6 +14,17 @@ export function redact(value) {
 }
 function failure(message, status = 503) { return Object.assign(new Error(redact(message).slice(0, 1500)), { status }); }
 function abortError() { return Object.assign(new Error('任务已停止。已完成的内容已保留。'), { name: 'AbortError' }); }
+export function imageModel(catalog) {
+  // Image input is necessary for reference continuity. It is not a guarantee
+  // that the native image tool is available; validate tool output on every turn.
+  const candidates = catalog.filter(item => item.inputModalities?.includes('image'));
+  return (candidates.find(item => item.isDefault) || candidates[0])?.model;
+}
+function traced(error, traceId) {
+  error.traceId = traceId;
+  if (error.name !== 'AbortError' && !error.message.includes(traceId)) error.message += `（诊断编号 ${traceId}；在「生成连接」导出诊断日志）`;
+  return error;
+}
 async function exists(file) { try { await access(file); return true; } catch { return false; } }
 
 // Resolve the official native CLI without invoking a shell or reading auth.json.
@@ -59,13 +72,19 @@ export class CodexConnection extends EventEmitter {
   async start() {
     const args = ['app-server', '--listen', 'stdio://', ...Object.entries(lockedConfig).flatMap(([key, value]) => ['-c', `${key}=${JSON.stringify(value)}`]), '-c', 'mcp_servers={}'];
     this.child = this.spawnImpl(this.executable, args, { cwd: this.cwd, env: this.env, windowsHide: true, stdio: ['pipe', 'pipe', 'pipe'] });
-    this.child.stderr.on('data', () => {}); // Never persist CLI logs, which may contain account context.
+    // Extract categories only; raw CLI stderr can contain credentials or story text.
+    this.child.stderr.on('data', chunk => {
+      const text = chunk.toString();
+      const code = /429|rate.limit|quota|usage.limit/i.test(text) ? 'STDERR_RATE_LIMIT' : /401|unauthorized/i.test(text) ? 'STDERR_AUTH' : /timed?.?out|timeout/i.test(text) ? 'STDERR_TIMEOUT' : /error|failed/i.test(text) ? 'STDERR_ERROR' : null;
+      if (code) this.emit('diagnostic', { stage: 'transport', code });
+    });
     this.child.on('error', () => this.fail(failure('无法启动官方 Codex，请检查程序路径与安装。')));
     this.child.on('exit', () => this.fail(failure('Codex 连接已关闭，已完成内容保留；请重新检测连接。')));
     this.reader = createInterface({ input: this.child.stdout });
     this.reader.on('line', line => this.receive(line));
     this.child.stdin.on('error', () => this.fail(failure('Codex 通道已关闭，请重新检测连接。')));
-    await this.request('initialize', { clientInfo: { name: 'moge_studio', title: '墨格创作室', version: '2.1.0' }, capabilities: { experimentalApi: true } });
+    const initialized = await this.request('initialize', { clientInfo: { name: 'moge_studio', title: '墨格创作室', version: '2.1.1' }, capabilities: { experimentalApi: true } });
+    this.version = initialized.userAgent?.match(/\/(\d+\.\d+\.\d+(?:-[a-zA-Z0-9.]+)?)/)?.[1] || 'unknown';
     this.send({ method: 'initialized', params: {} });
     return this;
   }
@@ -112,6 +131,7 @@ export class CodexAI {
   constructor(settings, store, { proxyProvider, connectionFactory, findExecutable = findCodex, turnTimeout = 900000 } = {}) {
     Object.assign(this, { settings, store, proxyProvider, connectionFactory, findExecutable, turnTimeout }); this.connection = null; this.connecting = null;
     this.workRoot = path.join(store.root, 'codex-work');
+    this.diagnostics = new Diagnostics(store.root);
   }
   async connect() {
     if (this.disposed) throw failure('工作室已关闭，Codex 连接已停止。');
@@ -124,8 +144,9 @@ export class CodexAI {
       if (this.disposed) throw failure('工作室已关闭，Codex 连接已停止。');
       const options = { executable, cwd: this.workRoot, env: codexEnvironment(process.env, proxy) };
       const conn = this.connectionFactory ? this.connectionFactory(options) : new CodexConnection(options);
+      conn.on('diagnostic', fields => { void this.diagnostics.record(fields); });
       this.launching = conn;
-      try { await conn.start(); if (this.disposed) throw failure('工作室已关闭，Codex 连接已停止。'); this.connection = conn; return conn; } catch (error) { conn.close(); throw error; } finally { this.launching = null; }
+      try { await conn.start(); if (this.disposed) throw failure('工作室已关闭，Codex 连接已停止。'); this.connection = conn; await this.diagnostics.record({ stage: 'connected', version: conn.version, proxyEnabled: !!proxy }); return conn; } catch (error) { conn.close(); await this.diagnostics.record({ stage: 'connection_failed', code: errorCode(error) }); throw error; } finally { this.launching = null; }
     })().finally(() => { this.connecting = null; });
     return this.connecting;
   }
@@ -153,7 +174,7 @@ export class CodexAI {
       const buckets = result.rateLimitsByLimitId ? Object.values(result.rateLimitsByLimitId) : result.rateLimits ? [result.rateLimits] : [];
       limits = buckets.map(bucket => ({ name: bucket.limitName || bucket.limitId || 'Codex', primary: bucket.primary, secondary: bucket.secondary }));
     } catch { /* Connection and model detection work even if limits are temporarily unavailable. */ }
-    return { ...account, models: models.map(m => ({ id: m.model, name: m.displayName || m.model, isDefault: m.isDefault })), limits };
+    return { ...account, version: this.connection.version || 'unknown', imageModel: imageModel(models) || null, models: models.map(m => ({ id: m.model, name: m.displayName || m.model, isDefault: m.isDefault })), limits };
   }
   async login() {
     const conn = await this.connect();
@@ -166,15 +187,20 @@ export class CodexAI {
   }
   async reset() { if (this.connecting) await this.connecting.catch(() => {}); this.connection?.close(); this.connection = null; this.loginId = null; }
   close() { this.disposed = true; this.launching?.close(); this.connection?.close(); this.connection = null; }
-  async generate({ input, instructions, schema, image = false }, signal = new AbortController().signal) {
-    signal.throwIfAborted(); await this.requireAccount(); signal.throwIfAborted();
-    const conn = await this.connect(); const workDir = await mkdtemp(path.join(this.workRoot, 'turn-'));
+  async generate({ input, instructions, schema, image = false, traceId = randomUUID() }, signal = new AbortController().signal) {
+    const began = Date.now();
+    await this.diagnostics.record({ stage: 'generation_started', traceId, kind: image ? 'image' : 'text', referenceCount: input.filter(i => i.type === 'localImage').length });
+    let conn, workDir;
     let threadId, turnId, succeeded = false;
     let onNotification, onDisconnected, onUnsupported, onAbort, timer;
     try {
+      signal.throwIfAborted(); const account = await this.requireAccount(); signal.throwIfAborted();
+      conn = await this.connect(); workDir = await mkdtemp(path.join(this.workRoot, 'turn-'));
       const catalog = await this.modelCatalog();
-      const model = this.settings.value.codexModel || catalog.find(item => item.isDefault)?.model || catalog[0]?.model;
+      const model = image ? imageModel(catalog) : this.settings.value.codexModel || catalog.find(item => item.isDefault)?.model || catalog[0]?.model;
+      if (image && !model) throw Object.assign(failure('当前 Codex 模型列表没有支持图像输入的模型，无法绘制或使用参考图。请检测连接或更新官方 Codex。', 400), { diagnosticCode: 'NO_IMAGE_CAPABLE_MODEL', stopBatch: true });
       if (!model || !catalog.some(item => item.model === model)) throw failure('所选模型不在当前 Codex 可用列表中，请重新检测连接并选择模型。', 400);
+      await this.diagnostics.record({ stage: 'model_selected', traceId, model, plan: account.plan, kind: image ? 'image' : 'text', version: conn.version });
       const started = await conn.request('thread/start', {
         model, modelProvider: 'openai',
         cwd: workDir, approvalPolicy: 'never', sandbox: 'read-only', ephemeral: true,
@@ -183,22 +209,30 @@ export class CodexAI {
         developerInstructions: '这是用户主动启动的短篇小说与漫画创作任务。只处理本次提供的素材。禁止读取其他文件、执行命令、使用浏览器、调用外部插件或创建子代理。不要请求交互确认。',
       });
       threadId = started.thread.id;
+      await this.diagnostics.record({ stage: 'thread_started', traceId, threadId, model: started.model });
       signal.throwIfAborted();
       const result = await new Promise((resolve, reject) => {
         const messages = new Map(), images = new Map(); let usage;
+        const collect = item => {
+          if (!item) return;
+          if (item.type === 'agentMessage') messages.set(item.id, item);
+          if (item.type === 'imageGeneration') {
+            images.set(item.id, item);
+            void this.diagnostics.record({ stage: 'image_result', traceId, threadId, itemType: item.type, status: item.status, resultBytes: typeof item.result === 'string' ? Buffer.byteLength(item.result) : 0, savedPathPresent: !!item.savedPath });
+          }
+        };
         const interrupt = () => { if (turnId && !conn.closed) void conn.request('turn/interrupt', { threadId, turnId }).catch(() => {}); };
         onAbort = () => { interrupt(); reject(abortError()); };
         onDisconnected = reject;
         onUnsupported = () => { interrupt(); reject(failure('Codex 请求了此创作流程不支持的工具操作，本次生成已停止。')); };
         onNotification = (method, params) => {
           if (params.threadId !== threadId) return;
-          if (method === 'item/completed') {
-            const item = params.item;
-            if (item.type === 'agentMessage') messages.set(item.id, item);
-            if (item.type === 'imageGeneration') images.set(item.id, item);
-          }
+          if (method === 'item/started') void this.diagnostics.record({ stage: 'item_started', traceId, threadId, itemType: params.item?.type, status: params.item?.status });
+          if (method === 'item/completed') collect(params.item);
           if (method === 'thread/tokenUsage/updated') usage = params.tokenUsage?.last;
           if (method === 'turn/completed') {
+            for (const item of params.turn.items || []) collect(item);
+            void this.diagnostics.record({ stage: 'turn_completed', traceId, threadId, turnId: params.turn.id, status: params.turn.status, imageCount: images.size, messageCount: messages.size, durationMs: Date.now() - began });
             if (params.turn.status === 'completed') resolve({ messages: [...messages.values()], images: [...images.values()], usage });
             else {
               const text = params.turn.error?.message || (params.turn.status === 'interrupted' ? '任务已停止。' : 'Codex 未完成本次生成。');
@@ -218,7 +252,10 @@ export class CodexAI {
       });
       signal.throwIfAborted();
       succeeded = true;
-      return { ...result, model: started.model, workDir };
+      return { ...result, model: started.model, workDir, traceId };
+    } catch (error) {
+      await this.diagnostics.record({ stage: 'generation_failed', traceId, threadId, turnId, code: errorCode(error), durationMs: Date.now() - began });
+      throw traced(error, traceId);
     } finally {
       clearTimeout(timer);
       if (onNotification) conn.off('notification', onNotification);
@@ -227,7 +264,7 @@ export class CodexAI {
       if (onAbort) signal.removeEventListener('abort', onAbort);
       if (threadId && !conn.closed) await conn.request('thread/unsubscribe', { threadId }).catch(() => {});
       // Image files are read by image() before explicit cleanup; text turns need no artifacts.
-      if (!image || !succeeded) await this.cleanup(workDir);
+      if (workDir && (!image || !succeeded)) await this.cleanup(workDir);
     }
   }
   async cleanup(dir) {
@@ -242,8 +279,11 @@ export class CodexAI {
     }, signal);
     const final = result.messages.filter(m => m.phase === 'final_answer').at(-1) || result.messages.at(-1);
     let data;
-    try { data = schema.parse(JSON.parse(final?.text || '')); } catch { throw failure('Codex 返回的故事结构不完整，原稿已保留，请手动重试。', 502); }
-    return { data, model: result.model, usage: result.usage };
+    try { data = schema.parse(JSON.parse(final?.text || '')); } catch {
+      await this.diagnostics.record({ stage: 'output_invalid', traceId: result.traceId, code: 'INVALID_STORY_STRUCTURE' });
+      throw traced(failure('Codex 返回的故事结构不完整，原稿已保留，请手动重试。', 502), result.traceId);
+    }
+    return { data, model: result.model, usage: result.usage, diagnosticId: result.traceId };
   }
   async image(prompt, project, references, signal) {
     const refs = [...new Set(references.filter(Boolean))].slice(0, 6);
@@ -254,7 +294,10 @@ export class CodexAI {
     }, signal);
     try {
       const item = result.images.find(value => value.status === 'completed' && (value.result || value.savedPath));
-      if (!item) throw failure('Codex 未返回真实图片。请确认当前 Codex 版本和账户支持内置图片生成，原图已保留。', 502);
+      if (!item) {
+        const called = result.images.length > 0;
+        throw Object.assign(failure(called ? 'Codex 图片工具未交付可保存的图片，原图已保留。请查看诊断日志中的工具状态后再重试。' : `Codex（${result.model}）只返回了文字，没有交付图片工具结果。已停止后续画格，原图已保留。请导出诊断日志排查。`, 502), { diagnosticCode: called ? 'IMAGE_TOOL_NO_OUTPUT' : 'IMAGE_TOOL_NOT_CALLED', stopBatch: !called });
+      }
       let data;
       if (item.result && /^(?:data:image\/\w+;base64,)?[A-Za-z0-9+/=\r\n]+$/.test(item.result)) {
         data = item.result.startsWith('data:') ? item.result : `data:image/png;base64,${item.result}`;
@@ -264,7 +307,12 @@ export class CodexAI {
         data = `data:image/png;base64,${(await readFile(file)).toString('base64')}`;
       } else throw failure('Codex 返回的图片格式无法识别。', 502);
       signal?.throwIfAborted();
-      return { image: await this.store.asset(data), model: 'codex-image-generation', usage: result.usage, references: refs.length };
+      const asset = await this.store.asset(data);
+      await this.diagnostics.record({ stage: 'image_saved', traceId: result.traceId, model: result.model, referenceCount: refs.length });
+      return { image: asset, model: 'codex-image-generation', orchestratorModel: result.model, diagnosticId: result.traceId, usage: result.usage, references: refs.length };
+    } catch (error) {
+      await this.diagnostics.record({ stage: 'image_failed', traceId: result.traceId, model: result.model, code: error.diagnosticCode || 'IMAGE_OUTPUT_INVALID', imageCount: result.images.length });
+      throw traced(error, result.traceId);
     } finally { await this.cleanup(result.workDir); }
   }
 }

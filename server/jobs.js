@@ -100,11 +100,11 @@ export class Jobs {
           try {
             const r = await this.ai.image(prompt, p, refs, signal);
             s.image = r.image; s.status = 'ready'; s.error = ''; s.history = [...s.history, { id: randomUUID(), image: r.image, createdAt: new Date().toISOString(), prompt, model: r.model }].slice(-30);
-            job.usage.push({ panelId: s.id, model: r.model, usage: r.usage, references: r.references });
+            job.usage.push({ panelId: s.id, model: r.model, orchestratorModel: r.orchestratorModel, diagnosticId: r.diagnosticId, usage: r.usage, references: r.references });
           } catch (error) {
             if (signal.aborted) throw error;
-            s.status = 'error'; s.error = friendlyError(error); job.errors.push({ panelId: s.id, error: s.error });
-            if ([401, 403, 429].includes(error.status) || job.type === 'panel') { p = await this.store.save(p, p.revision); throw error; }
+            s.status = 'error'; s.error = friendlyError(error); job.errors.push({ panelId: s.id, error: s.error, diagnosticId: error.traceId });
+            if (error.stopBatch || [401, 403, 429].includes(error.status) || job.type === 'panel') { p = await this.store.save(p, p.revision); throw error; }
           }
           p = await this.store.save(p, p.revision);
           // Reconnect target objects after schema parsing in save().
@@ -115,7 +115,7 @@ export class Jobs {
       if (!['panel', 'panels'].includes(job.type)) p = await this.store.save(p, p.revision);
       await this.update(job, { status: job.errors.length ? 'partial' : 'completed', progress: job.total, message: job.errors.length ? `完成 ${job.total - job.errors.length} 格，${job.errors.length} 格失败，可继续补绘。` : `${labels[job.type]}完成` });
     } catch (error) {
-      await this.update(job, { status: signal.aborted ? 'cancelled' : 'failed', message: friendlyError(error) });
+      await this.update(job, { status: signal.aborted ? 'cancelled' : 'failed', message: friendlyError(error), diagnosticId: error.traceId });
     } finally { this.active.delete(job.projectId); this.controllers.delete(job.id); }
   }
   list(projectId) { return [...this.jobs.values()].filter(j => j.projectId === projectId).sort((a, b) => b.createdAt.localeCompare(a.createdAt)).slice(0, 30); }

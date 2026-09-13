@@ -36,6 +36,20 @@ test('完整工作流：纲要确认、文稿、角色、批量绘图、历史�
   const restored = (await h.req(`/projects/${p.id}/restore/${versions.at(-1).id}`, 'POST')).data; assert.equal(restored.outline, null); assert.ok(restored.revision > p.revision);
 });
 
+test('图片工具不可用时立即停止批量生成，持久化诊断编号并保留其余画格', async t => {
+  const h = await harness(t, { failAt: 1, stopBatch: true });
+  let p = (await h.req('/projects', 'POST', { ...demoProject(), outlineApproved: true })).data;
+  const script = (await h.req(`/projects/${p.id}/jobs`, 'POST', { type: 'storyboard', revision: p.revision })).data;
+  await h.done(script); p = (await h.req(`/projects/${p.id}`)).data;
+  const before = structuredClone(p.panels.slice(1));
+  const job = await h.done((await h.req(`/projects/${p.id}/jobs`, 'POST', { type: 'panels', revision: p.revision })).data);
+  assert.equal(job.status, 'failed'); assert.equal(job.errors.length, 1); assert.equal(job.usage.length, 0);
+  assert.equal(job.diagnosticId, 'test-diagnostic-id');
+  assert.equal(JSON.parse(await readFile(h.jobs.file(job.id), 'utf8')).diagnosticId, job.diagnosticId);
+  p = (await h.req(`/projects/${p.id}`)).data;
+  assert.deepEqual(p.panels.slice(1), before);
+});
+
 test('并发与失效纲要：旧修订号、任务期间写入、重新确认', async t => {
   const h = await harness(t, { delay: 130 }); let p = (await h.req('/projects', 'POST', demoProject())).data;
   const old = p; p = (await h.req(`/projects/${p.id}`, 'PUT', { ...p, outlineApproved: true })).data;

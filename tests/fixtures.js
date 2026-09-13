@@ -5,7 +5,7 @@ export const png = `data:image/png;base64,${(await readFile(new URL('../desktop/
 export function fakeAI(_settings, store, options = {}) {
   let calls = 0;
   return { client() { return {}; }, async models() { return ['gpt-5-mini', 'gpt-image-2']; },
-    async status() { return { connected: true, authType: 'chatgpt', plan: 'pro', models: [{ id: 'gpt-5.5', name: 'GPT-5.5', isDefault: true }], limits: [{ name: 'Codex', primary: { usedPercent: 20, windowDurationMins: 300, resetsAt: 1800000000 }, secondary: null }] }; },
+    async status() { return { connected: true, authType: 'chatgpt', plan: 'pro', version: '0.138.0', imageModel: 'gpt-5.5', models: [{ id: 'gpt-5.5', name: 'GPT-5.5', isDefault: true }], limits: [{ name: 'Codex', primary: { usedPercent: 20, windowDurationMins: 300, resetsAt: 1800000000 }, secondary: null }] }; },
     async test() { return _settings.value.provider === 'codex' ? { ...await this.status(), ok: true, provider: 'codex' } : { ok: true, provider: 'api', models: await this.models(), textAvailable: true, imageAvailable: true }; },
     async structured(_schema, name, _instructions, ctx, signal) {
       await new Promise(resolve => setTimeout(resolve, options.delay || 70)); signal.throwIfAborted();
@@ -15,7 +15,7 @@ export function fakeAI(_settings, store, options = {}) {
     },
     async image(prompt, _p, refs, signal) {
       calls++; await new Promise(resolve => setTimeout(resolve, options.delay || 75)); signal.throwIfAborted();
-      if (options.failAt === calls) throw new Error('测试中的暂时绘图失败');
+      if (options.failAt === calls) throw Object.assign(new Error('测试中的暂时绘图失败'), { stopBatch: !!options.stopBatch, traceId: options.stopBatch ? 'test-diagnostic-id' : undefined });
       return { image: await store.asset(png), model: 'test-image', usage: { total_tokens: 20 }, references: refs.length, prompt };
     }
   };

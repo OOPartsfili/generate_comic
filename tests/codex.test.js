@@ -17,15 +17,15 @@ class FakeConnection extends EventEmitter {
   async request(method, params) {
     this.calls.push({ method, params });
     if (method === 'account/read') return { account: { type: this.options.authType || 'chatgpt', planType: 'pro', email: 'private-account@example.invalid', accessToken: 'private-token-must-not-escape' } };
-    if (method === 'model/list') return { data: [{ model: 'gpt-5.5', isDefault: true, displayName: 'GPT-5.5' }] };
+    if (method === 'model/list') return { data: this.options.models || [{ model: 'gpt-5.5', isDefault: true, displayName: 'GPT-5.5', inputModalities: ['text', 'image'] }, { model: 'gpt-5.3-codex-spark', inputModalities: ['text'] }] };
     if (method === 'account/rateLimits/read') return { rateLimits: { limitId: 'codex', primary: { usedPercent: 40, windowDurationMins: 300, resetsAt: 1800000000 } } };
     if (method === 'thread/start') return { thread: { id: `thread-${++this.number}` }, model: params.model };
     if (method === 'turn/start') {
       const turnId = `turn-${this.number}`;
       if (!this.options.hang) setTimeout(() => {
-        const item = this.options.image ? { id: 'image-1', type: 'imageGeneration', status: 'completed', result: png.split(',')[1] } : { id: 'message-1', type: 'agentMessage', phase: 'final_answer', text: this.options.malformed ? '这不是 JSON' : JSON.stringify({ prose: '这是一份隔离测试生成的短篇，验证官方 Codex 通道能够返回完整结构，而不会将私有登录凭据写入故事。' }) };
-        this.emit('notification', 'item/completed', { threadId: params.threadId, item });
-        this.emit('notification', 'turn/completed', { threadId: params.threadId, turn: { id: turnId, status: this.options.quota ? 'failed' : 'completed', error: this.options.quota ? { message: 'Limit reached', codexErrorInfo: 'usageLimitExceeded' } : null } });
+        const item = this.options.image ? { id: 'image-1', type: 'imageGeneration', status: this.options.toolFailed ? 'failed' : 'completed', result: this.options.toolFailed ? '' : png.split(',')[1] } : { id: 'message-1', type: 'agentMessage', phase: 'final_answer', text: this.options.malformed ? '这不是 JSON' : JSON.stringify({ prose: '这是一份隔离测试生成的短篇，验证官方 Codex 通道能够返回完整结构，而不会将私有登录凭据写入故事。' }) };
+        if (!this.options.finalItemsOnly) this.emit('notification', 'item/completed', { threadId: params.threadId, item });
+        this.emit('notification', 'turn/completed', { threadId: params.threadId, turn: { id: turnId, items: [item], status: this.options.quota ? 'failed' : 'completed', error: this.options.quota ? { message: 'Limit reached', codexErrorInfo: 'usageLimitExceeded' } : null } });
       }, 5);
       return { turn: { id: turnId } };
     }
@@ -38,7 +38,7 @@ async function harness(t, options) {
   const store = new Store(dir); await store.init(); const settings = new Settings(dir); await settings.init();
   const connection = new FakeConnection(options); let apiCalls = 0;
   const ai = new AI(settings, store, () => { apiCalls++; throw new Error('Must not call API'); }, { connectionFactory: () => connection, findExecutable: async () => 'test-codex', turnTimeout: 1000 });
-  t.after(async () => { ai.close(); assert.equal(path.dirname(dir), base); await rm(dir, { recursive: true, force: true }); });
+  t.after(async () => { ai.close(); await ai.codex.diagnostics.pending; assert.equal(path.dirname(dir), base); await rm(dir, { recursive: true, force: true }); });
   return { dir, settings, ai, store, connection, apiCalls: () => apiCalls };
 }
 
@@ -115,4 +115,38 @@ test('关闭窗口发生在 Codex 启动前时，不遗留后台进程', async t
   const connecting = codex.connect(); const assertion = assert.rejects(connecting, /工作室已关闭/);
   while (!release) await new Promise(resolve => setTimeout(resolve, 2));
   codex.close(); release('test-codex'); await assertion; assert.equal(spawned, false);
+});
+
+test('Spark 仅负责文字，图片独立路由；最终 turn items 也能接收真实图片', async t => {
+  const h = await harness(t, { image: true, finalItemsOnly: true });
+  h.settings.value.codexModel = 'gpt-5.3-codex-spark';
+  const result = await h.ai.image('private-story-must-not-appear-in-logs', newProject(), [], new AbortController().signal);
+  assert.equal(result.orchestratorModel, 'gpt-5.5');
+  assert.equal(h.settings.value.codexModel, 'gpt-5.3-codex-spark');
+  assert.equal(h.connection.calls.filter(c => c.method === 'turn/start').length, 1);
+  const log = await h.ai.codex.diagnostics.snapshot();
+  assert.ok(log.entries.some(e => e.stage === 'image_saved' && e.traceId === result.diagnosticId));
+  for (const value of ['private-story', png.split(',')[1], 'private-account', 'private-token', h.dir]) assert.ok(!JSON.stringify(log).includes(value));
+  h.connection.options.image = false;
+  const text = await h.ai.structured(proseResponse, 'prose', '', {}, new AbortController().signal);
+  assert.equal(text.model, 'gpt-5.3-codex-spark');
+});
+
+test('未调用图片工具与工具失败分别记录诊断；缺少图像模型时不消耗生成请求', async t => {
+  for (const options of [{}, { image: true, toolFailed: true }]) {
+    const h = await harness(t, options); let traceId;
+    await assert.rejects(h.ai.image('private-story', newProject(), [], new AbortController().signal), error => {
+      traceId = error.traceId;
+      assert.match(error.message, /诊断编号/);
+      assert.equal(error.diagnosticCode, options.image ? 'IMAGE_TOOL_NO_OUTPUT' : 'IMAGE_TOOL_NOT_CALLED');
+      assert.equal(error.stopBatch, !options.image); return true;
+    });
+    const log = await h.ai.codex.diagnostics.snapshot();
+    assert.ok(log.entries.some(e => e.stage === 'image_failed' && e.traceId === traceId));
+    assert.equal(h.connection.calls.filter(c => c.method === 'turn/start').length, 1);
+    assert.deepEqual(await readdir(path.join(h.dir, 'codex-work')), []);
+  }
+  const h = await harness(t, { models: [{ model: 'gpt-5.3-codex-spark', isDefault: true, inputModalities: ['text'] }] });
+  await assert.rejects(h.ai.image('', newProject(), [], new AbortController().signal), e => e.diagnosticCode === 'NO_IMAGE_CAPABLE_MODEL' && e.stopBatch);
+  assert.ok(!h.connection.calls.some(c => c.method === 'turn/start'));
 });

@@ -7,6 +7,7 @@ import { ZodError } from 'zod';
 import { Store } from './storage.js';
 import { Settings, AI, friendlyError } from './openai.js';
 import { Jobs } from './jobs.js';
+import { Diagnostics } from './diagnostics.js';
 import { newProject, projectMarkdown } from '../shared/story.js';
 import { projectSchema } from './schemas.js';
 
@@ -18,6 +19,7 @@ export async function createApplication({ dataDir = process.env.MOGE_DATA_DIR ||
   const settings = new Settings(dataDir, vault); await settings.init();
   const ai = aiFactory ? aiFactory(settings, store) : new AI(settings, store, fetchImpl, { proxyProvider });
   const jobs = new Jobs(store, ai); await jobs.init();
+  const diagnostics = ai.codex?.diagnostics || new Diagnostics(dataDir);
   const app = express();
   app.disable('x-powered-by');
   app.use((req, res, next) => {
@@ -33,7 +35,8 @@ export async function createApplication({ dataDir = process.env.MOGE_DATA_DIR ||
   });
   app.use(express.json({ limit: '180mb' }));
   const exclusive = async (id, fn) => { if (jobs.active.has(id)) throw Object.assign(new Error('作品正在生成，请等待完成或停止任务后再编辑'), { status: 409 }); jobs.active.set(id, 'editing'); try { return await fn(); } finally { jobs.active.delete(id); } };
-  app.get('/api/health', (_req, res) => res.json({ ok: true, app: 'moge-studio', version: '2.1.0' }));
+  app.get('/api/health', (_req, res) => res.json({ ok: true, app: 'moge-studio', version: '2.1.1' }));
+  app.get('/api/diagnostics', async (_req, res) => res.json(await diagnostics.snapshot()));
   app.get('/api/settings', (_req, res) => res.json(settings.public()));
   app.put('/api/settings', async (req, res) => { if (jobs.controllers.size) return res.status(409).json({ error: '请先等待当前生成结束再修改连接或模型' }); const oldPath = settings.value.codexPath; const saved = await settings.save(req.body); if (oldPath !== settings.value.codexPath) await ai.codex?.reset(); res.json(saved); });
   app.get('/api/connection', async (_req, res) => res.json(await ai.status()));

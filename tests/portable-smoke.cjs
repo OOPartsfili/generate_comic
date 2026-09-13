@@ -21,7 +21,14 @@ const assert = require('node:assert/strict');
       if (!turn && process.env.MOGE_CHECK_CODEX === '1') {
         await page.getByRole('button', { name: '保存并检测连接' }).click();
         await page.getByText(/ChatGPT 已连接/).waitFor({ timeout: 60000 });
+        await page.getByText(/官方 Codex 版本：/).waitFor();
+        await page.getByRole('button', { name: '导出诊断日志' }).waitFor();
+        const diagnostics = await page.evaluate(async () => (await fetch('/api/diagnostics')).json());
+        assert.equal(diagnostics.appVersion, '2.1.1');
+        assert.ok(diagnostics.entries.some(row => row.stage === 'connected'));
+        assert.ok(!diagnostics.writeError);
         console.log('PASS: portable EXE uses official Codex with ChatGPT sign-in.');
+        console.log('PASS: portable EXE exposes version and local metadata-only diagnostic logs.');
       }
       if (!turn) { await page.getByLabel('生成方式').selectOption('api'); await page.getByLabel('OpenAI API 密钥').fill('portable-test-only-not-a-real-key'); await page.getByRole('button', { name: '保存设置', exact: true }).click(); await page.getByText('设置已保存，密钥使用 Windows 账户加密。').waitFor(); }
       else assert.ok((await page.getByLabel('OpenAI API 密钥').getAttribute('placeholder')).includes('已保存'));
